@@ -23,7 +23,13 @@ week_11 <- shaming %>%
   select(-general_04, -no_of_names, -birth_year, -hh_size) %>% 
   sample_n(10000)
 
-week_11_split <- initial_split(week_11)
+week_11_clean <- week_11 %>%
+  mutate(primary_02 = ifelse(primary_02 == "Yes", 1, 0),
+         general_02 = ifelse(general_02 == "Yes", 1, 0),
+         primary_04 = ifelse(primary_04 == "Yes", 1, 0),
+         treatment = fct_relevel(treatment, "Control"))
+
+week_11_split <- initial_split(week_11_clean)
 week_11_train <- training(week_11_split)
 week_11_test  <- testing(week_11_split)
 week_11_folds <- vfold_cv(week_11_train, v = 5)
@@ -34,19 +40,76 @@ week_11_folds <- vfold_cv(week_11_train, v = 5)
 
 **Prompt:** Explore a variety models which explain `primary_06` as a function of the variables in our data set. Make sure to explore some interaction terms. 
 
+```{r}
+trial_1 <- stan_glm(primary_06 ~ treatment + age + sex + treatment:sex,
+                    data = week_11_train, refresh = 0)
+
+print(trial_1, digits = 4)
+
+trial_2 <- stan_glm(primary_06 ~ primary_02 + general_02 + primary_04,
+                    data = week_11_train, refresh = 0)
+
+print(trial_2, digits = 4)
+```
+
 * Come up with at least two models that a) you like and would be willing to defend and b) are somewhat different from one another. The two most common model types in these situations are "simple" and "full". The former includes a minimum number of variables. The latter errs on the side of variable inclusion and the creation of interaction terms.
+
+```{r}
+simple <- stan_glm(primary_06 ~ treatment,
+                   data = week_11_train, refresh = 0)
+
+print(simple, digits = 4)
+
+full <- stan_glm(primary_06 ~ treatment + age + sex + treatment:sex,
+                    data = week_11_train, refresh = 0)
+
+print(full, digits = 4)
+```
+
 
 * Which data set should we use for this? Why?
 
+Training -- can't run this on testing unless we want to test how good a model is after fitting it (otherwise defeats the purpose of having a testing set at all)
+
 * What does it mean if, for example, the coefficient of `treatmentNeighbors` varies across models?
+
+Predicted effect of the treatment is different depending on what other variables you control for. 
 
 * Do things change if we start using all the data? Is there a danger in doing so?
 
+Not that much but you shouldn't b/c overfitting
 
 ## Scene 2
 
 **Prompt:** Compare your two models using cross-validation.
 
+```{r}
+simple_wfl <- workflow() %>%
+  add_model(linear_reg() %>%
+              set_engine("stan")) %>%
+  add_recipe(recipe(primary_06 ~ treatment,
+                   data = week_11_train))
+
+full_wfl <- workflow() %>%
+   add_model(linear_reg() %>%
+              set_engine("stan")) %>%
+  add_recipe(recipe(primary_06 ~ treatment + age + sex, 
+                    data = week_11_train)) %>%
+  step_interact(terms = ~ treatment:sex)
+```
+
+```{r}
+simple_wfl %>%
+  fit_resamples(week_11_folds) %>%
+  collect_metrics()
+
+full_wfl %>%
+  fit_resamples(week_11_folds) %>%
+  collect_metrics()
+
+```
+
+Full model fits better on the training set - this makes sense, more predictors always reduce the error (even though the predictors we use here are a little different)
 
 ## Scene 3
 
@@ -54,6 +117,50 @@ week_11_folds <- vfold_cv(week_11_train, v = 5)
 
 * If you have time, redo all the important steps above with the full data set.
 
+```{r}
+simple_wfl %>%
+  fit(data = week_11_train) %>%
+  predict(new_data = week_11_test) %>%
+  bind_cols(week_11_test %>% select(primary_06)) %>%
+  metrics(truth = primary_06, estimate = .pred)
+
+full_wfl %>%
+  fit(data = week_11_train) %>%
+  predict(new_data = week_11_test) %>%
+  bind_cols(week_11_test %>% select(primary_06)) %>%
+  metrics(truth = primary_06, estimate = .pred)
+```
+
+
+```{r}
+
+simple_wfl <- workflow() %>%
+  add_model(linear_reg() %>%
+              set_engine("stan")) %>%
+  add_recipe(recipe(primary_06 ~ treatment,
+                   data = week_11_clean))
+
+full_wfl <- workflow() %>%
+   add_model(linear_reg() %>%
+              set_engine("stan")) %>%
+  add_recipe(recipe(primary_06 ~ treatment + age + sex, 
+                    data = week_11_clean)) %>%
+  step_interact(terms = ~ treatment:sex)
+
+
+simple_wfl %>%
+  fit(data = week_11_train) %>%
+  predict(new_data = week_11_clean) %>%
+  bind_cols(week_11_clean %>% select(primary_06)) %>%
+  metrics(truth = primary_06, estimate = .pred)
+
+full_wfl %>%
+  fit(data = week_11_train) %>%
+  predict(new_data = week_11_clean) %>%
+  bind_cols(week_11_clean %>% select(primary_06)) %>%
+  metrics(truth = primary_06, estimate = .pred)
+```
+New fit maintains the same thing: full model works better on the testing dataset too, so doesn't look like we've overfitted. 
 
 
 ## Optional Problems
@@ -62,7 +169,24 @@ Challenge groups should be encouraged to make some plots. Hard thing about these
 
 * Plot the primary_06 versus age for all the data. There are many ways to do that. Here is mine.
 
+```{r}
+week_11_clean %>%
+  mutate(primary_06 = as.factor(primary_06)) %>%
+  ggplot(aes(x = age, fill = primary_06)) + 
+    geom_bar(position = "dodge")
+```
+
+
 * Plot the predicted values for the simple model versus the predicted values for the full model. How different are they?
+
+```{r}
+simple_wfl %>%
+  fit(data = week_11_clean) %>%
+  predict(new_data = week_11_clean) %>%
+  bind_cols(week_11_clean %>% select(primary_06, age)) %>%
+  ggplot(aes(x = age, y = `.pred`)) + geom_point()
+```
+
 
 * Plot the predicted values for the full model (fitted with all the training data) against the true values? Is there anything strange? Are there categories of observations with big residuals? Looking for such things can provide clues about how to improve the model.
 
